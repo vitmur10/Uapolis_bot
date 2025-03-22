@@ -25,7 +25,7 @@ SECRET_KEY = "django-insecure-_go3m_5nrardgv@78yrodhz)4z99v)yp=u0&e2#c*vurb%g)i1
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = ["kurakini.com", "127.0.0.1", "e605-91-235-225-251.ngrok-free.app"]
+ALLOWED_HOSTS = ["kurakini.com", "127.0.0.1", "93.190.43.143", "www.kurakini.com"]
 
 CSRF_TRUSTED_ORIGINS = [
     'https://http://bot.kurakini.com/', "http://e605-91-235-225-251.ngrok-free.app"
@@ -83,6 +83,19 @@ DATABASES = {
         "NAME": BASE_DIR / "db.sqlite3",
     }
 }
+
+
+"""DATABASES = {
+    "default": {
+        "ENGINE": "django.db.backends.postgresql",
+        "NAME": "db_jar",
+        "USER": "myuser",
+        "PASSWORD": "botjar",
+        "HOST": "db",  # Назва контейнера PostgreSQL
+        "PORT": "5432",
+    }
+}"""
+
 
 
 # Password validation

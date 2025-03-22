@@ -85,3 +85,43 @@ class CartItem(models.Model):
     def total_price(self):
         """Підсумкова ціна для цього товару (ціна * кількість)"""
         return self.product.price * self.quantity
+
+
+class Order(models.Model):
+    """Модель для замовлення"""
+    STATUS_CHOICES = [
+        ('Очікується', 'Очікується'),
+        ('Оплачено', 'Оплачено'),
+        ('Відправлено', 'Відправлено'),
+        ('Доставлено', 'Доставлено'),
+        ('Скасовано', 'Скасовано'),
+    ]
+
+    user = models.ForeignKey(CustomUser, on_delete=models.CASCADE)  # Користувач, що зробив замовлення
+    created_at = models.DateTimeField(auto_now_add=True)  # Час створення замовлення
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='Очікується')
+    total_price = models.DecimalField(max_digits=10, decimal_places=2, default=0)  # Підсумкова ціна замовлення
+    address = models.CharField(max_length=255, blank=True, null=True)  # Адреса доставки
+    phone = models.CharField(max_length=20, blank=True, null=True)  # Телефон
+    full_name = models.CharField(max_length=255)  # Повне ім'я користувача
+    phone_number = models.CharField(max_length=20)  # Номер телефону
+    city = models.CharField(max_length=100)  # Місто
+    warehouse = models.CharField(max_length=255)  # Склад, де буде забране замовлення
+
+    def __str__(self):
+        return f"Замовлення {self.id} - {self.user.username}"
+
+    class Meta:
+        verbose_name = "Замовлення"
+        verbose_name_plural = "Замовлення"
+
+
+class OrderItem(models.Model):
+    """Модель товару в замовленні"""
+    order = models.ForeignKey(Order, related_name='items', on_delete=models.CASCADE)  # Зв'язок з замовленням
+    product = models.ForeignKey(Product, on_delete=models.CASCADE)  # Продукт
+    quantity = models.PositiveIntegerField(default=1)  # Кількість товару
+    price = models.DecimalField(max_digits=10, decimal_places=2)  # Ціна товару
+
+    def __str__(self):
+        return f"{self.quantity} x {self.product.name} в замовленні {self.order.id}"

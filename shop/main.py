@@ -1,20 +1,18 @@
 import asyncio
 import logging
 import os
-from datetime import timedelta
+from aiogram.fsm.state import State, StatesGroup
 import aiogram
-from aiogram import types, Bot
 from aiogram.filters import CommandStart
-from aiogram.types import FSInputFile, InputFile
+from aiogram.types import FSInputFile
 from asgiref.sync import sync_to_async
 from django.core.wsgi import get_wsgi_application
-from django.db.models.fields.files import ImageFieldFile
-from django.utils import timezone
+from aiogram.fsm.context import FSMContext
 from keyboard import *
+from np import city_ref, get_warehouse_ref, create_express_invoice
 
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "shop.settings")
 application = get_wsgi_application()
-from aiogram.fsm.storage.memory import MemoryStorage
 
 from orders.models import *
 from Const import *
@@ -25,6 +23,13 @@ router = aiogram.Router()
 logging.basicConfig(level=logging.INFO)
 
 dp.include_router(router)
+
+
+class OrderForm(StatesGroup):
+    full_name = State()
+    phone_number = State()
+    city = State()
+    warehouse = State()
 
 
 def generate_keyboard():
@@ -165,24 +170,6 @@ async def clear_cart(call: types.CallbackQuery):
         await call.answer("Ваш кошик вже порожній!")
 
 
-@router.callback_query(lambda call: call.data == "checkout")
-async def checkout_cart(call: types.CallbackQuery):
-    user_id = call.from_user.id
-    user_cart = await sync_to_async(
-        Cart.objects.prefetch_related('cartitems__product').filter(user__telegram_id=user_id).first)()
-
-    if not user_cart or not user_cart.cartitems.exists():
-        await call.answer("Ваш кошик порожній!")
-        return
-
-    # Логіка оформлення замовлення
-    total_sum = user_cart.total_price()
-    await call.message.edit_text(f"Замовлення оформлено!\nЗагальна сума: {total_sum} грн")
-
-    # Очищення кошика після оформлення
-    await sync_to_async(user_cart.cartitems.all().delete)()
-
-
 # Обробка натискання на кнопку "Перейти до кошика"
 @router.message(lambda message: message.text == "Кошик")
 async def show_cart(message: aiogram.types.Message):
@@ -219,6 +206,120 @@ async def show_cart(message: aiogram.types.Message):
     await message.answer(cart_text, reply_markup=keyboard)
 
 
+@router.callback_query(aiogram.F.data == "checkout")
+async def checkout_start(callback: types.CallbackQuery, state: FSMContext):
+    await state.set_state(OrderForm.full_name)
+    await callback.message.answer("Введіть ваше ПІБ (Прізвище Ім'я По батькові):")
+
+
+@router.message(OrderForm.full_name)
+async def process_full_name(message: types.Message, state: FSMContext):
+    await state.update_data(full_name=message.text)
+    await state.set_state(OrderForm.phone_number)
+    await message.answer("Введіть ваш номер телефону (у форматі +380XXXXXXXXX):")
+
+
+@router.message(OrderForm.phone_number)
+async def process_phone_number(message: types.Message, state: FSMContext):
+    if not message.text.startswith('380') or len(message.text) != 12 or not message.text[1:].isdigit():
+        await message.answer("Невірний формат. Введіть номер у форматі 380XXXXXXXXX:")
+        return
+    await state.update_data(phone_number=message.text)
+    await state.set_state(OrderForm.city)
+    await message.answer("Введіть ваше місто:")
+
+
+@router.message(OrderForm.city)
+async def process_city(message: types.Message, state: FSMContext):
+    # Оновлюємо дані міста в стані
+    await state.update_data(city=message.text)
+
+    # Викликаємо функцію для отримання Ref для міста
+    city = message.text
+    ref = city_ref(city)
+
+    if ref:
+        # Зберігаємо ref у стані для подальшого використання
+        await state.update_data(ref=ref)
+        await message.answer(f"Місто знайдено! Ref: {ref}")
+    else:
+        await message.answer("Місто не знайдено. Спробуйте ще раз.")
+
+    # Перехід до наступного етапу (введення номеру відділення)
+    await state.set_state(OrderForm.warehouse)
+    await message.answer("Введіть номер відділення Нової Пошти:")
+
+
+import asyncio
+
+
+@router.message(OrderForm.warehouse)
+async def process_warehouse(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+
+    city = data.get('city')
+    warehouse_number = message.text
+
+    ref = await get_warehouse_ref(city, warehouse_number)
+    if ref:
+        await state.update_data(warehouse_ref=ref)
+        await message.answer(f"Відділення знайдено! Ref: {ref}")
+    else:
+        await message.answer("Відділення не знайдено. Спробуйте ще раз.")
+        return
+
+    user_id = message.from_user.id
+    user_cart = await sync_to_async(
+        Cart.objects.prefetch_related('cartitems__product').filter(user__telegram_id=user_id).first
+    )()
+
+    if not user_cart or not user_cart.cartitems.exists():
+        await message.answer("Ваш кошик порожній.")
+        await state.clear()
+        return
+
+    user_cart = await sync_to_async(
+        Cart.objects.select_related('user').prefetch_related('cartitems__product').filter(
+            user__telegram_id=user_id).first
+    )()
+    order = await sync_to_async(Order.objects.create)(
+        user=user_cart.user,
+        full_name=data['full_name'],
+        phone_number=data['phone_number'],
+        city=data['city'],
+        warehouse=message.text,
+        total_price=user_cart.total_price()
+    )
+
+    for item in user_cart.cartitems.all():
+        await sync_to_async(OrderItem.objects.create)(
+            order=order,
+            product=item.product,
+            quantity=item.quantity,
+            price=item.product.price
+        )
+
+    await sync_to_async(user_cart.cartitems.all().delete)()
+    user_cart = await sync_to_async(
+        Cart.objects.select_related('user').prefetch_related('cartitems__product').filter(
+            user__telegram_id=user_id).first
+    )()
+    print(data['full_name'],
+          data['phone_number'],
+          data['city'], )
+    # Викликаємо create_express_invoice у фоновому потоці
+    invoice_message = await create_express_invoice(
+        data['city'],
+        warehouse_number,
+        data['full_name'],
+        data['phone_number'],
+        user_cart.total_price()
+    )
+    print(invoice_message)
+    await message.answer(invoice_message)
+    await state.clear()
+
+
 @router.message(lambda message: message.text in ["Продукти", "Інше"])
 async def menu(message: types.Message):
     category = message.text
@@ -239,7 +340,6 @@ async def menu(message: types.Message):
         await message.answer("Ось доступні категорії:", reply_markup=keyboard)
     else:
         await message.answer("Немає доступних категорій.")
-
 
 
 @router.message(lambda message: message.text == "Оферта продажу")
