@@ -1,1 +1,3 @@
 shop/.env
+!/shop/.env
+!/shop/.env

@@ -9,20 +9,15 @@ from asgiref.sync import sync_to_async
 from django.core.wsgi import get_wsgi_application
 from aiogram.fsm.context import FSMContext
 from keyboard import *
-from np import city_ref, get_warehouse_ref, create_express_invoice
 
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "shop.settings")
 application = get_wsgi_application()
 
 from orders.models import *
 from Const import *
+from orders.views import city_ref, get_warehouse_ref
 
-8
 router = aiogram.Router()
-
-logging.basicConfig(level=logging.INFO)
-
-dp.include_router(router)
 
 
 class OrderForm(StatesGroup):
@@ -233,18 +228,6 @@ async def process_phone_number(message: types.Message, state: FSMContext):
 async def process_city(message: types.Message, state: FSMContext):
     # Оновлюємо дані міста в стані
     await state.update_data(city=message.text)
-
-    # Викликаємо функцію для отримання Ref для міста
-    city = message.text
-    ref = city_ref(city)
-
-    if ref:
-        # Зберігаємо ref у стані для подальшого використання
-        await state.update_data(ref=ref)
-        await message.answer(f"Місто знайдено! Ref: {ref}")
-    else:
-        await message.answer("Місто не знайдено. Спробуйте ще раз.")
-
     # Перехід до наступного етапу (введення номеру відділення)
     await state.set_state(OrderForm.warehouse)
     await message.answer("Введіть номер відділення Нової Пошти:")
@@ -256,68 +239,47 @@ import asyncio
 @router.message(OrderForm.warehouse)
 async def process_warehouse(message: types.Message, state: FSMContext):
     data = await state.get_data()
-
-    city = data.get('city')
-    warehouse_number = message.text
-
-    ref = await get_warehouse_ref(city, warehouse_number)
-    if ref:
-        await state.update_data(warehouse_ref=ref)
-        await message.answer(f"Відділення знайдено! Ref: {ref}")
-    else:
-        await message.answer("Відділення не знайдено. Спробуйте ще раз.")
-        return
-
     user_id = message.from_user.id
     user_cart = await sync_to_async(
         Cart.objects.prefetch_related('cartitems__product').filter(user__telegram_id=user_id).first
     )()
 
-    if not user_cart or not user_cart.cartitems.exists():
+    if not user_cart or not await sync_to_async(user_cart.cartitems.exists)():
         await message.answer("Ваш кошик порожній.")
         await state.clear()
         return
 
-    user_cart = await sync_to_async(
-        Cart.objects.select_related('user').prefetch_related('cartitems__product').filter(
-            user__telegram_id=user_id).first
-    )()
+    user_cart_user = await sync_to_async(lambda: user_cart.user)()
+
     order = await sync_to_async(Order.objects.create)(
-        user=user_cart.user,
+        user=user_cart_user,
         full_name=data['full_name'],
         phone_number=data['phone_number'],
         city=data['city'],
         warehouse=message.text,
-        total_price=user_cart.total_price()
+        total_price=user_cart.total_price(),
+        status='Очікує підтвердження'
     )
 
-    for item in user_cart.cartitems.all():
+    for item in await sync_to_async(list)(user_cart.cartitems.all()):
+        shipping_address = await sync_to_async(lambda: item.product.shipping_address)()
         await sync_to_async(OrderItem.objects.create)(
             order=order,
             product=item.product,
             quantity=item.quantity,
-            price=item.product.price
+            price=item.product.price,
+            shipping_address=shipping_address
         )
 
     await sync_to_async(user_cart.cartitems.all().delete)()
-    user_cart = await sync_to_async(
-        Cart.objects.select_related('user').prefetch_related('cartitems__product').filter(
-            user__telegram_id=user_id).first
-    )()
-    print(data['full_name'],
-          data['phone_number'],
-          data['city'], )
-    # Викликаємо create_express_invoice у фоновому потоці
-    invoice_message = await create_express_invoice(
-        data['city'],
-        warehouse_number,
-        data['full_name'],
-        data['phone_number'],
-        user_cart.total_price()
+
+    await message.answer(
+        "Ваше замовлення було створено та відправлено на підтвердження адміністратору."
     )
-    print(invoice_message)
-    await message.answer(invoice_message)
     await state.clear()
+
+
+# Додайте функцію для підтвердження адміністратором
 
 
 @router.message(lambda message: message.text in ["Продукти", "Інше"])
@@ -353,10 +315,7 @@ async def ofert(message: types.Message):
 
 
 async def main():
-    # Запускаємо функцію перевірки підписок у фоновому режимі
-
-    # Запускаємо бота
-    await bot.delete_webhook(drop_pending_updates=True)
+    dp.include_router(router)
     await dp.start_polling(bot)
 
 
